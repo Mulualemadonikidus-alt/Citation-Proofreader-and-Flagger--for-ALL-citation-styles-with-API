@@ -20,7 +20,7 @@ if not gemini_api_key:
 
 # ─── TEXT EXTRACTION LAYER ───
 def extract_text_and_paragraphs(file):
-    """Extracts raw text text blocks and a structured array of clean paragraphs."""
+    """Extracts raw text blocks and a structured array of clean paragraphs from PDF or Word files."""
     paragraphs = []
     full_text = ""
     
@@ -42,9 +42,9 @@ def extract_text_and_paragraphs(file):
         
     return full_text, paragraphs
 
-# ─── ADAPTIVE BIBLIOGRAPHY PARSER (VANCOUVER / APA / AMA) ───
+# ─── STATEFUL BIBLIOGRAPHY PARSER (PREVENTS LINE-WRAPPING DUPLICATION) ───
 def parse_bibliography(full_text):
-    """Isolates the reference chunk and adaptively parses both numbered and author-date formats."""
+    """Isolates the reference block and groups multi-line text fragments based on style rules."""
     split_keywords = [r"\nreferences\n", r"\nbibliography\n", r"\nliterature cited\n", r"\nreference list\n"]
     bib_text = ""
     body_text = full_text
@@ -62,60 +62,97 @@ def parse_bibliography(full_text):
         body_text = full_text[:split_idx]
         bib_text = full_text[split_idx:]
 
-    bib_mapping = {}
     lines = [line.strip() for line in bib_text.split('\n') if line.strip()]
     
+    # Heuristic Look-Ahead: Scan the section to determine the prevailing bibliography layout
+    numbered_line_count = 0
+    total_lines_checked = 0
+    for line in lines[:40]:
+        if line.lower() in ['references', 'bibliography', 'literature cited', 'reference list']:
+            continue
+        total_lines_checked += 1
+        if re.match(r"^\[?(\d+)\]?[\s\.\-\)]+", line):
+            numbered_line_count += 1
+            
+    is_numbered_system = (numbered_line_count / max(1, total_lines_checked)) > 0.20
+    
+    bib_mapping = {}
+    current_id = None
     generated_id = 1
     doi_regex = r"(10\.\d{4,9}/[-._;()/:A-Z0-9]+)"
     
     for line in lines:
-        # Ignore common section header lines
         if line.lower() in ['references', 'bibliography', 'literature cited', 'reference list']:
             continue
             
-        # Style A: Check for Numbered Systems (Vancouver / AMA / Style Variations like 1. or [1] or 1)
         num_match = re.match(r"^\[?(\d+)\]?[\s\.\-\)]+", line)
         
-        if num_match:
-            serial_num = int(num_match.group(1))
-            clean_citation = re.sub(r"^\[?(\d+)\]?[\s\.\-\)]+", "", line).strip()
-            in_text_marker = str(serial_num)
-        else:
-            # Style B: Author-Date Systems (APA / Harvard variations)
-            serial_num = generated_id
-            clean_citation = line
-            # Attempt to isolate first author surname and year for context location matching
-            author_match = re.match(r"^([A-Za-z\-]+)", line)
-            year_match = re.search(r"\b(19\d{2}|20\d{2})\b", line)
-            
-            author_token = author_match.group(1) if author_match else ""
-            year_token = year_match.group(1) if year_match else ""
-            
-            if author_token and year_token:
-                in_text_marker = f"{author_token}" # Will search text paragraphs containing the author name
+        if is_numbered_system:
+            if num_match:
+                # Instantiates a fresh numbered item anchor
+                current_id = int(num_match.group(1))
+                clean_citation = re.sub(r"^\[?(\d+)\]?[\s\.\-\)]+", "", line).strip()
+                bib_mapping[current_id] = {
+                    "raw_lines": [line],
+                    "clean_query": clean_citation,
+                    "marker": str(current_id)
+                }
             else:
-                in_text_marker = line[:15] # Fallback string slice
-            generated_id += 1
+                # Appends wrapping text fragments to the current reference item buffer
+                if current_id in bib_mapping:
+                    bib_mapping[current_id]["raw_lines"].append(line)
+                    bib_mapping[current_id]["clean_query"] += " " + line
+                else:
+                    # Defensive fallback case
+                    current_id = generated_id
+                    bib_mapping[current_id] = {
+                        "raw_lines": [line],
+                        "clean_query": line,
+                        "marker": str(current_id)
+                    }
+                    generated_id += 1
+        else:
+            # Author-Date/Alphabetical Layout Engine (APA style rules)
+            is_new_author_block = re.match(r"^[A-Z][A-Za-z\-]+,?\s[A-Z]", line) or re.match(r"^[A-Z][a-z]+", line)
             
-        # Isolate direct embedded inline DOI if it happens to exist
-        doi_match = re.search(doi_regex, line, re.IGNORECASE)
+            if not bib_mapping or is_new_author_block:
+                current_id = generated_id
+                author_match = re.match(r"^([A-Za-z\-]+)", line)
+                author_token = author_match.group(1) if author_match else ""
+                in_text_marker = author_token if author_token else line[:15]
+                
+                bib_mapping[current_id] = {
+                    "raw_lines": [line],
+                    "clean_query": line,
+                    "marker": in_text_marker
+                }
+                generated_id += 1
+            else:
+                if current_id in bib_mapping:
+                    bib_mapping[current_id]["raw_lines"].append(line)
+                    bib_mapping[current_id]["clean_query"] += " " + line
+
+    # Post-Process: Compile strings smoothly and strip isolated DOIs
+    final_mapping = {}
+    for idx, data in bib_mapping.items():
+        combined_text = " ".join(data["raw_lines"])
+        doi_match = re.search(doi_regex, combined_text, re.IGNORECASE)
         explicit_doi = doi_match.group(1).rstrip('.,);]') if doi_match else None
         
-        bib_mapping[serial_num] = {
-            "raw_line": line,
-            "clean_query": clean_citation,
+        final_mapping[idx] = {
+            "raw_line": combined_text,
+            "clean_query": re.sub(r"\s+", " ", data["clean_query"]).strip(),
             "explicit_doi": explicit_doi,
-            "marker": in_text_marker
+            "marker": data["marker"]
         }
         
-    return body_text, bib_mapping
+    return body_text, final_mapping
 
-# ─── REGISTRY RESOLUTION & AUTHENTICITY EVALUATION ENGINE ───
+# ─── REGISTRY RESOLUTION ENGINE ───
 def resolve_and_verify_citation(bib_info):
-    """Resolves unstructured text strings using Crossref and confirms match metadata integrity."""
+    """Resolves citation strings against official Crossref metadata indices."""
     headers = {"User-Agent": "CiteShieldPro/2.0 (mailto:analytics@citeshield.pro)"}
     
-    # Pathway 1: If DOI is directly present in text strings, query it directly
     if bib_info["explicit_doi"]:
         url = f"https://api.crossref.org/works/{bib_info['explicit_doi']}"
         try:
@@ -126,7 +163,6 @@ def resolve_and_verify_citation(bib_info):
         except Exception:
             pass
 
-    # Pathway 2: Unstructured Text Search Matcher (Handles Vancouver, APA, AMA variations natively)
     search_url = "https://api.crossref.org/works"
     params = {"query": bib_info["clean_query"], "rows": 1}
     
@@ -135,13 +171,12 @@ def resolve_and_verify_citation(bib_info):
         if res.status_code == 200:
             items = res.json().get("message", {}).get("items", [])
             if not items:
-                return {"status": "Hallucinated/Fake Reference", "title": "N/A", "journal": "N/A", "author": "N/A", "doi": "N/A", "year": "N/A"}
+                return {"status": "Hallucinated/Fake Reference", "title": "N/A", "journal": "N/A", "main_author": "N/A", "doi": "N/A", "year": "N/A"}
                 
             top_match = items[0]
             resolved_meta = package_crossref_metadata(top_match, "Valid")
             
-            # --- AUTHENTICITY INTEGRITY GUARD ---
-            # Compare search text with returned parameters to detect hallucinated entries
+            # Cross-validation validation layer
             query_lower = bib_info["clean_query"].lower()
             title_words = set(re.findall(r'\w+', resolved_meta["title"].lower())) - {'the', 'a', 'of', 'in', 'and', 'for', 'with', 'on', 'at', 'by', 'to'}
             query_words = set(re.findall(r'\w+', query_lower))
@@ -150,18 +185,24 @@ def resolve_and_verify_citation(bib_info):
             author_surname = resolved_meta["main_author"].split(',')[0].lower()
             author_match = author_surname in query_lower if author_surname != "unknown author" else True
             
-            # Critical Threshold: If title keywords and author names both completely fail to align, flag it
             if len(word_overlap) < 2 and not author_match:
-                return {"status": "Hallucinated/Fake Reference", "title": f"Mismatched Match: {resolved_meta['title']}", "journal": resolved_meta["journal"], "author": resolved_meta["main_author"], "doi": resolved_meta["doi"], "year": resolved_meta["year"]}
+                return {
+                    "status": "Hallucinated/Fake Reference", 
+                    "title": f"Mismatched Match: {resolved_meta['title']}", 
+                    "journal": resolved_meta["journal"], 
+                    "main_author": resolved_meta["main_author"], 
+                    "doi": resolved_meta["doi"], 
+                    "year": resolved_meta["year"]
+                }
                 
             return resolved_meta
     except Exception:
         pass
         
-    return {"status": "Unverified API Failure", "title": "N/A", "journal": "N/A", "author": "N/A", "doi": "N/A", "year": "N/A"}
+    return {"status": "Unverified API Failure", "title": "N/A", "journal": "N/A", "main_author": "N/A", "doi": "N/A", "year": "N/A"}
 
 def package_crossref_metadata(item, base_status):
-    """Normalizes Crossref data into a standard clean format."""
+    """Packages dictionary components defensively to avoid unexpected downstream KeyErrors."""
     title = item.get("title", ["Unknown Title"])[0]
     journal = item.get("container-title", ["Unknown Journal"])[0]
     doi = item.get("DOI", "N/A")
@@ -183,7 +224,7 @@ def package_crossref_metadata(item, base_status):
 
 @st.cache_data(show_spinner=False)
 def fetch_abstract_via_semantic_scholar(doi):
-    """Retrieves verified abstracts via Semantic Scholar API using resolved DOIs."""
+    """Queries Semantic Scholar database to fetch paper abstracts."""
     if not doi or doi == "N/A":
         return ""
     url = f"https://api.semanticscholar.org/graph/v1/paper/DOI:{doi}?fields=abstract"
@@ -197,7 +238,7 @@ def fetch_abstract_via_semantic_scholar(doi):
 
 # ─── CONTEXT ANALYZER ───
 def check_contextual_fit(paragraph, abstract, api_key):
-    """Evaluates text claim alignment with deep abstract logic via Google Gemini."""
+    """Evaluates contextual logic alignment via Google Gemini API."""
     url = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent?key={api_key}"
     headers = {"Content-Type": "application/json"}
     
@@ -205,8 +246,8 @@ def check_contextual_fit(paragraph, abstract, api_key):
         "You are an expert scientific peer-reviewer. Assess if the manuscript paragraph accurately matches, "
         "supports, or reasonably synthesizes the empirical findings described within the cited study abstract.\n"
         "You must respond strictly in a valid JSON format containing exactly two keys:\n"
-        "1. 'fit': a boolean value (true if it aligns or is a reasonable synthesis, false if there is an explicit contextual mismatch, citation context error, or severe claim exaggeration).\n"
-        "2. 'reason': a brief explanation of your contextual review.\n\n"
+        "1. 'fit': a boolean value (true if it aligns, false if there is an explicit context mismatch).\n"
+        "2. 'reason': a brief explanation of your decision.\n\n"
         f"Manuscript Claim Paragraph:\n{paragraph}\n\nCited Abstract:\n{abstract}"
     )
     payload = {"contents": [{"parts": [{"text": prompt}]}], "generationConfig": {"responseMimeType": "application/json"}}
@@ -218,14 +259,14 @@ def check_contextual_fit(paragraph, abstract, api_key):
             content = json.loads(raw_text.strip())
             return content.get("fit", True), content.get("reason", "Verified alignment.")
     except Exception as e:
-        return True, f"Skipped fit calculation due to parsing issue: {e}"
-    return True, "API Connection could not evaluate fit."
+        return True, f"Skipped evaluation due to exception parsing: {e}"
+    return True, "API Connection could not verify alignment."
 
 # ─── USER INTERFACE RUNTIME ───
 uploaded_file = st.file_uploader("Upload Manuscript File", type=["docx", "pdf"])
 
 if uploaded_file:
-    with st.spinner("Decoding document structural layout..."):
+    with st.spinner("Decoding document structural layout matrices..."):
         full_text, paragraphs = extract_text_and_paragraphs(uploaded_file)
         body_text, bib_mapping = parse_bibliography(full_text)
         
@@ -238,41 +279,43 @@ if uploaded_file:
         progress_bar = st.progress(0)
         
         for idx, (serial_num, info) in enumerate(bib_mapping.items()):
-            # Phase 1: Search and resolve unstructured text parameters to official records
             verification = resolve_and_verify_citation(info)
             
-            # Phase 2: In-Text Context Location Scraper
+            v_status = verification.get("status", "Unverified")
+            v_doi = verification.get("doi", "N/A")
+            v_title = verification.get("title", "N/A")
+            v_journal = verification.get("journal", "N/A")
+            v_author = verification.get("main_author", "N/A")
+            
             marker = info["marker"]
             context_paragraphs = [p for p in paragraphs if marker in p]
             combined_context = " | ".join(context_paragraphs) if context_paragraphs else "Not explicitly mapped inside body text layout."
             
-            # Phase 3: Extract Abstract if verified real
             abstract_text = ""
-            if "Valid" in verification["status"]:
-                abstract_text = fetch_abstract_via_semantic_scholar(verification["doi"])
+            if "Valid" in v_status:
+                abstract_text = fetch_abstract_via_semantic_scholar(v_doi)
                 
             record = {
                 "Serial No": serial_num,
-                "DOI": verification["doi"],
-                "Title": verification["title"],
-                "Journal": verification["journal"],
-                "Main Author": verification["main_author"],
-                "Status": verification["status"],
+                "DOI": v_doi,
+                "Title": v_title,
+                "Journal": v_journal,
+                "Main Author": v_author,
+                "Status": v_status,
                 "Context Fit": "Not Verified",
                 "Context Paragraph": combined_context
             }
             
-            # Phase 4: Run Gemini Analysis for Real References
-            if "Valid" in verification["status"] and gemini_api_key and abstract_text:
+            if "Valid" in v_status and gemini_api_key and abstract_text:
                 fit, reason = check_contextual_fit(combined_context, abstract_text, gemini_api_key)
                 if not fit:
                     record["Status"] = "Contextual Mismatch"
                     record["Context Fit"] = f"🚨 Misalignment: {reason}"
                 else:
                     record["Context Fit"] = "✅ Aligned"
-            elif "Valid" in verification["status"] and not gemini_api_key:
+            elif "Valid" in v_status and not gemini_api_key:
                 record["Context Fit"] = "Provide Gemini Key to Verify"
-            elif "Hallucinated" in verification["status"]:
+            elif "Hallucinated" in v_status:
                 record["Context Fit"] = "Skipped (Fake Reference)"
                 
             audit_records.append(record)
@@ -280,7 +323,7 @@ if uploaded_file:
             
         df_audit = pd.DataFrame(audit_records)
         
-        # ─── FEATURE 3: SUMMARY TABLE OF FLAGGED ARTIFACTS ───
+        # ─── SUMMARY TABLE OF FLAGGED ARTIFACTS ───
         st.markdown("## 📊 Reference Audit Summary Table")
         flagged_df = df_audit[df_audit["Status"].isin(["Hallucinated/Fake Reference", "Contextual Mismatch", "Unverified API Failure"])]
         
@@ -294,7 +337,7 @@ if uploaded_file:
         else:
             st.success("Clean Audit! Every reference matched its live registry parameters seamlessly.")
 
-        # ─── FEATURE 2 & 4: DISPLAY INTERFACE WITH SERIAL MATCHING & HIGHLIGHTS ───
+        # ─── DETAILED OUTPUT DISPLAY ───
         st.markdown("## 🔍 Detailed Reference Audit Log")
         
         for rec in audit_records:
@@ -314,7 +357,6 @@ if uploaded_file:
                     st.markdown(f"**Title:** *{rec['Title']}*")
                     st.markdown(f"**Journal:** {rec['Journal']} | **Main Author:** {rec['Main Author']} | **DOI:** `{rec['DOI']}`")
                     
-                    # Highlight exact mismatched paragraph context block if Section 4 breaks
                     if rec["Status"] == "Contextual Mismatch":
                         st.error(f"**Context Fit Flag:** {rec['Context Fit']}")
                         st.markdown("#### Highlighted Paragraph with Inaccurate Context:")
