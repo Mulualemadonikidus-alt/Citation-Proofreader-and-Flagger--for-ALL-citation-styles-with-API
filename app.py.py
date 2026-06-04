@@ -20,7 +20,7 @@ if not gemini_api_key:
 
 # ─── TEXT EXTRACTION LAYER ───
 def extract_text_and_paragraphs(file):
-    """Extracts raw text blocks and a structured array of clean paragraphs from PDF or Word files."""
+    """Extracts raw text blocks and a structured array of clean paragraphs."""
     paragraphs = []
     full_text = ""
     
@@ -42,9 +42,9 @@ def extract_text_and_paragraphs(file):
         
     return full_text, paragraphs
 
-# ─── STATEFUL BIBLIOGRAPHY PARSER (PREVENTS LINE-WRAPPING DUPLICATION) ───
+# ─── SEQUENCE-VALIDATED BIBLIOGRAPHY PARSER ───
 def parse_bibliography(full_text):
-    """Isolates the reference block and groups multi-line text fragments based on style rules."""
+    """Isolates the reference chunk and groups items using an active sequence verification filter."""
     split_keywords = [r"\nreferences\n", r"\nbibliography\n", r"\nliterature cited\n", r"\nreference list\n"]
     bib_text = ""
     body_text = full_text
@@ -64,7 +64,7 @@ def parse_bibliography(full_text):
 
     lines = [line.strip() for line in bib_text.split('\n') if line.strip()]
     
-    # Heuristic Look-Ahead: Scan the section to determine the prevailing bibliography layout
+    # Pre-scan layout type
     numbered_line_count = 0
     total_lines_checked = 0
     for line in lines[:40]:
@@ -78,43 +78,49 @@ def parse_bibliography(full_text):
     
     bib_mapping = {}
     current_id = None
+    next_expected_id = 1
     generated_id = 1
     doi_regex = r"(10\.\d{4,9}/[-._;()/:A-Z0-9]+)"
     
     for line in lines:
+        # Filter layout/journal noise tracking signatures
         if line.lower() in ['references', 'bibliography', 'literature cited', 'reference list']:
+            continue
+        if "plos one" in line.lower() or "doi.org/10.1371" in line.lower():
             continue
             
         num_match = re.match(r"^\[?(\d+)\]?[\s\.\-\)]+", line)
         
         if is_numbered_system:
             if num_match:
-                # Instantiates a fresh numbered item anchor
-                current_id = int(num_match.group(1))
-                clean_citation = re.sub(r"^\[?(\d+)\]?[\s\.\-\)]+", "", line).strip()
-                bib_mapping[current_id] = {
-                    "raw_lines": [line],
-                    "clean_query": clean_citation,
-                    "marker": str(current_id)
-                }
+                potential_id = int(num_match.group(1))
+                
+                # STRICT SEQUENCE TRACKING: Must follow the established chronological flow
+                if potential_id == next_expected_id or (potential_id == next_expected_id + 1 and next_expected_id > 1):
+                    current_id = potential_id
+                    next_expected_id = current_id + 1
+                    clean_citation = re.sub(r"^\[?(\d+)\]?[\s\.\-\)]+", "", line).strip()
+                    bib_mapping[current_id] = {
+                        "raw_lines": [line],
+                        "clean_query": clean_citation,
+                        "marker": str(current_id)
+                    }
+                else:
+                    # Out of sequence numbers (years/volumes) are merged back to the active tracking parent
+                    if current_id in bib_mapping:
+                        bib_mapping[current_id]["raw_lines"].append(line)
+                        bib_mapping[current_id]["clean_query"] += " " + line
             else:
-                # Appends wrapping text fragments to the current reference item buffer
                 if current_id in bib_mapping:
                     bib_mapping[current_id]["raw_lines"].append(line)
                     bib_mapping[current_id]["clean_query"] += " " + line
-                else:
-                    # Defensive fallback case
+                elif not bib_mapping:
                     current_id = generated_id
-                    bib_mapping[current_id] = {
-                        "raw_lines": [line],
-                        "clean_query": line,
-                        "marker": str(current_id)
-                    }
+                    bib_mapping[current_id] = {"raw_lines": [line], "clean_query": line, "marker": str(current_id)}
                     generated_id += 1
         else:
-            # Author-Date/Alphabetical Layout Engine (APA style rules)
+            # Author-Date/Alphabetical system rules
             is_new_author_block = re.match(r"^[A-Z][A-Za-z\-]+,?\s[A-Z]", line) or re.match(r"^[A-Z][a-z]+", line)
-            
             if not bib_mapping or is_new_author_block:
                 current_id = generated_id
                 author_match = re.match(r"^([A-Za-z\-]+)", line)
@@ -132,7 +138,6 @@ def parse_bibliography(full_text):
                     bib_mapping[current_id]["raw_lines"].append(line)
                     bib_mapping[current_id]["clean_query"] += " " + line
 
-    # Post-Process: Compile strings smoothly and strip isolated DOIs
     final_mapping = {}
     for idx, data in bib_mapping.items():
         combined_text = " ".join(data["raw_lines"])
@@ -176,7 +181,6 @@ def resolve_and_verify_citation(bib_info):
             top_match = items[0]
             resolved_meta = package_crossref_metadata(top_match, "Valid")
             
-            # Cross-validation validation layer
             query_lower = bib_info["clean_query"].lower()
             title_words = set(re.findall(r'\w+', resolved_meta["title"].lower())) - {'the', 'a', 'of', 'in', 'and', 'for', 'with', 'on', 'at', 'by', 'to'}
             query_words = set(re.findall(r'\w+', query_lower))
@@ -202,7 +206,7 @@ def resolve_and_verify_citation(bib_info):
     return {"status": "Unverified API Failure", "title": "N/A", "journal": "N/A", "main_author": "N/A", "doi": "N/A", "year": "N/A"}
 
 def package_crossref_metadata(item, base_status):
-    """Packages dictionary components defensively to avoid unexpected downstream KeyErrors."""
+    """Packages dictionary metadata cleanly."""
     title = item.get("title", ["Unknown Title"])[0]
     journal = item.get("container-title", ["Unknown Journal"])[0]
     doi = item.get("DOI", "N/A")
@@ -236,7 +240,6 @@ def fetch_abstract_via_semantic_scholar(doi):
         pass
     return ""
 
-# ─── CONTEXT ANALYZER ───
 def check_contextual_fit(paragraph, abstract, api_key):
     """Evaluates contextual logic alignment via Google Gemini API."""
     url = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent?key={api_key}"
@@ -323,7 +326,7 @@ if uploaded_file:
             
         df_audit = pd.DataFrame(audit_records)
         
-        # ─── SUMMARY TABLE OF FLAGGED ARTIFACTS ───
+        # ─── SUMMARY TABLE ───
         st.markdown("## 📊 Reference Audit Summary Table")
         flagged_df = df_audit[df_audit["Status"].isin(["Hallucinated/Fake Reference", "Contextual Mismatch", "Unverified API Failure"])]
         
@@ -337,7 +340,7 @@ if uploaded_file:
         else:
             st.success("Clean Audit! Every reference matched its live registry parameters seamlessly.")
 
-        # ─── DETAILED OUTPUT DISPLAY ───
+        # ─── DETAILED LOGS ───
         st.markdown("## 🔍 Detailed Reference Audit Log")
         
         for rec in audit_records:
