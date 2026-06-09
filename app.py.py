@@ -255,31 +255,53 @@ def fetch_abstract_via_semantic_scholar(doi):
         pass
     return ""
 
-def check_contextual_fit(paragraph, abstract, api_key):
-    """Evaluates contextual logic alignment via Google Gemini API."""
-    url = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent?key={api_key}"
-    headers = {"Content-Type": "application/json"}
+def get_contextual_fit_analysis(context_paragraph, reference_content):
+    """
+    Performs a forensic audit of the citation context using a 6-point 
+    verification schema to ensure factual alignment.
+    """
+    prompt = f"""
+    You are an academic forensic auditor. Compare the provided Body Text excerpt and the cited Reference for factual consistency.
+
+    1. Body Text: "{context_paragraph}"
+    2. Reference: "{reference_content}"
+
+    Audit the following 6 core data points:
+    1. Study Sites: Do the hospitals match?
+    2. Methodology: Does the study design/type match?
+    3. Sample Size: Does the 'n' match?
+    4. Study Year: Do the timeframes match?
+    5. Objectives: Do the study goals align?
+    6. Abstract Context: Does the reference abstract support the body text's claim?
+
+    Output the result in the following JSON format:
+    {{
+        "Status": "ALIGNED" or "MISMATCH",
+        "Discrepancies": ["list any specific failures here or 'None'"],
+        "Reasoning": "One sentence explanation."
+    }}
+    """
     
-    prompt = (
-        "You are an expert scientific peer-reviewer. Assess if the manuscript paragraph accurately matches, "
-        "supports, or reasonably synthesizes the empirical findings described within the cited study abstract.\n"
-        "You must respond strictly in a valid JSON format containing exactly two keys:\n"
-        "1. 'fit': a boolean value (true if it aligns, false if there is an explicit context mismatch).\n"
-        "2. 'reason': a brief explanation of your decision.\n\n"
-        f"Manuscript Claim Paragraph:\n{paragraph}\n\nCited Abstract:\n{abstract}"
-    )
-    payload = {"contents": [{"parts": [{"text": prompt}]}], "generationConfig": {"responseMimeType": "application/json"}}
+    # Generate content using the Gemini model
+    model = genai.GenerativeModel('gemini-1.5-flash')
+    response = model.generate_content(prompt)
     
+    # Parse the JSON response
     try:
-        res = requests.post(url, json=payload, headers=headers, timeout=12)
-        res.raise_for_status()
-        if res.status_code == 200:
-            raw_text = res.json()['candidates'][0]['content']['parts'][0]['text']
-            content = json.loads(raw_text.strip())
-            return content.get("fit", True), content.get("reason", "Verified alignment.")
+        json_text = response.text.replace("```json", "").replace("```", "").strip()
+        data = json.loads(json_text)
+        
+        return {
+            "status": data.get("Status", "MISMATCH"),
+            "discrepancies": data.get("Discrepancies", []),
+            "reasoning": data.get("Reasoning", "No explanation provided.")
+        }
     except Exception as e:
-        return True, f"Skipped evaluation due to exception parsing: {e}"
-    return True, "API Connection could not verify alignment."
+        return {
+            "status": "MISMATCH",
+            "discrepancies": ["Audit parsing error"],
+            "reasoning": "Could not parse audit output."
+        }
 
 # ─── USER INTERFACE RUNTIME ───
 uploaded_file = st.file_uploader("Upload Manuscript File", type=["docx", "pdf"])
