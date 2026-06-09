@@ -28,8 +28,13 @@ def extract_text_and_paragraphs(file):
     if file.name.endswith('.docx'):
         doc = Document(file)
         for p in doc.paragraphs:
-            if p.text.strip():
-                paragraphs.append(p.text.strip())
+            text = p.text.strip()
+            if text:
+                # SANITIZATION: Clean AI line markers, source tags, and page annotations
+                text = re.sub(r"^\\s*", "", text, flags=re.IGNORECASE)
+                text = re.sub(r"^---\s*PAGE\s*\d+\s*---", "", text, flags=re.IGNORECASE)
+                if text.strip():
+                    paragraphs.append(text.strip())
         full_text = "\n".join(paragraphs)
         
     elif file.name.endswith('.pdf'):
@@ -38,7 +43,16 @@ def extract_text_and_paragraphs(file):
             text = page.extract_text()
             if text:
                 lines = [line.strip() for line in text.split('\n') if line.strip()]
-                paragraphs.extend(lines)
+                clean_lines = []
+                for line in lines:
+                    # SANITIZATION: Clean AI line markers, source tags, and page annotations
+                    line = re.sub(r"^\\s*", "", line, flags=re.IGNORECASE)
+                    line = re.sub(r"^---\s*PAGE\s*\d+\s*---", "", line, flags=re.IGNORECASE)
+                    if line.strip():
+                        clean_lines.append(line.strip())
+                if clean_lines:
+                    paragraphs.extend(clean_lines)
+                    
         full_text = "\n".join(paragraphs)
         
     return full_text, paragraphs
