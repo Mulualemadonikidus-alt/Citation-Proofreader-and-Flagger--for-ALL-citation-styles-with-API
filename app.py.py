@@ -19,6 +19,7 @@ if not gemini_api_key:
     st.sidebar.warning("⚠️ Provide your Gemini API key from Google AI Studio to unlock Section 4 (Contextual Fit Analysis).")
 
 # ─── TEXT EXTRACTION LAYER ───
+@st.cache_data(ttl=3600, max_entries=100)
 def extract_text_and_paragraphs(file):
     """Extracts raw text blocks and a structured array of clean paragraphs."""
     paragraphs = []
