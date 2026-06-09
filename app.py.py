@@ -258,6 +258,7 @@ def check_contextual_fit(paragraph, abstract, api_key):
     
     try:
         res = requests.post(url, json=payload, headers=headers, timeout=12)
+        res.raise_for_status()
         if res.status_code == 200:
             raw_text = res.json()['candidates'][0]['content']['parts'][0]['text']
             content = json.loads(raw_text.strip())
