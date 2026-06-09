@@ -94,7 +94,7 @@ def parse_bibliography(full_text):
         
         if is_numbered_system:
             if num_match:
-                potential_id == next_expected_id:
+                potential_id = int(num_match.group(1))
                 
                 # STRICT SEQUENCE TRACKING: Must follow the established chronological flow
                 if potential_id == next_expected_id or (potential_id == next_expected_id + 1 and next_expected_id > 1):
