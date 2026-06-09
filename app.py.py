@@ -90,11 +90,11 @@ def parse_bibliography(full_text):
         if "plos one" in line.lower() or "doi.org/10.1371" in line.lower():
             continue
             
-        num_match = re.match(r"^\[?(\d+)\]?[\s\.\-\)]+", line)
+        num_match = re.match(r"^\[?(\d+)\]?(?:[\s\-\)]+|\.(?!\d))", line)
         
         if is_numbered_system:
             if num_match:
-                potential_id = int(num_match.group(1))
+                if potential_id == next_expected_id:
                 
                 # STRICT SEQUENCE TRACKING: Must follow the established chronological flow
                 if potential_id == next_expected_id or (potential_id == next_expected_id + 1 and next_expected_id > 1):
