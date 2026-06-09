@@ -375,7 +375,7 @@ if uploaded_file:
             st.warning(f"Attention Required: {len(flagged_df)} anomalies found.")
             st.dataframe(
                 flagged_df[["Serial No", "DOI", "Status", "Main Author", "Journal", "Context Fit"]], 
-                width=None,
+                width='stretch',  # <--- CORRECTED VALUE
                 hide_index=True
             )
         else:
