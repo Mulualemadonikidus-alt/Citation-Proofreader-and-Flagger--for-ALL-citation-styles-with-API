@@ -3,6 +3,7 @@ import re
 import requests
 import pandas as pd
 import json
+import google.generativeai as genai
 from docx import Document
 from pypdf import PdfReader
 
