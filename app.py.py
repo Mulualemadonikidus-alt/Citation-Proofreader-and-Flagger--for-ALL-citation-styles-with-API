@@ -348,7 +348,9 @@ if uploaded_file:
             }
             
             if "Valid" in v_status and gemini_api_key and abstract_text:
-                fit, reason = check_contextual_fit(combined_context, abstract_text, gemini_api_key)
+                result = get_contextual_fit_analysis(combined_context, abstract_text)
+                fit = (result["status"] == "ALIGNED")
+                reason = result["reasoning"]
                 if not fit:
                     record["Status"] = "Contextual Mismatch"
                     record["Context Fit"] = f"🚨 Misalignment: {reason}"
