@@ -259,44 +259,33 @@ def fetch_abstract_via_semantic_scholar(doi):
 @st.cache_data(show_spinner=False)
 def get_contextual_fit_analysis(context_paragraph, reference_content):
     """
-    Forensic audit using 6-point verification schema.
-    Optimized: Uses 'gemini-1.5-flash' for high-speed performance.
+    Performs a high-speed forensic audit of the citation context 
+    using a streamlined 3-point verification schema.
     """
-    model = genai.GenerativeModel('gemini-1.5-flash')
-    
-    # Ensure the prompt starts with opening triple quotes
     prompt = f"""
-    You are an academic forensic auditor. Compare the provided Body Text excerpt and the cited Reference for factual consistency.
+    You are an academic forensic auditor. Compare the provided Body Text excerpt and the cited Reference abstract for factual consistency.
 
     1. Body Text: "{context_paragraph}"
     2. Reference: "{reference_content}"
 
-    Audit the following 6 core data points:
-    1. Study Sites: Do the hospitals match?
-    2. Methodology: Does the study design/type match?
-    3. Sample Size: Does the 'n' match?
-    4. Study Year: Do the timeframes match?
-    5. Objectives: Do the study goals align?
-    6. Abstract Context: Does the reference abstract support the body text's claim?
+    Audit the following 3 core criteria for validation:
+    1. Core Claim Alignment: Does the body text accurately represent the main findings or objectives of the reference?
+    2. Methodological Consistency: Is there any fundamental contradiction in the study design or approach described?
+    3. Abstract Support: Does the reference abstract broadly support or justify the context in which it was cited?
 
     Output the result in the following JSON format:
     {{
         "Status": "ALIGNED" or "MISMATCH",
-        "Discrepancies": ["list any specific failures here or 'None'"],
-        "Reasoning": "One sentence explanation."
+        "Discrepancies": ["list any explicit contradictions here, or leave empty if none"],
+        "Reasoning": "One concise sentence explaining the decision."
     }}
-    """  # <--- THE CLOSING MARK GOES HERE, IMMEDIATELY AFTER THE PROMPT
-
-    # NOW, your executable code starts here on a fresh line:
-    model = genai.GenerativeModel('gemini-1.5-flash')
-    response = model.generate_content(prompt)
+    """
     
-    # Generate content using the Gemini model
+    # Generate content using the low-latency Gemini Flash model
     model = genai.GenerativeModel('gemini-1.5-flash')
-    response = model.generate_content(prompt)
     
-    # Parse the JSON response
     try:
+        response = model.generate_content(prompt)
         json_text = response.text.replace("```json", "").replace("```", "").strip()
         data = json.loads(json_text)
         
@@ -309,7 +298,7 @@ def get_contextual_fit_analysis(context_paragraph, reference_content):
         return {
             "status": "MISMATCH",
             "discrepancies": ["Audit parsing error"],
-            "reasoning": "Could not parse audit output."
+            "reasoning": "Could not parse high-speed audit output."
         }
 
 # ─── USER INTERFACE RUNTIME ───
