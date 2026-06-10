@@ -6,6 +6,7 @@ import json
 import google.generativeai as genai
 from docx import Document
 from pypdf import PdfReader
+import concurrent.futures  # High-speed background worker threads
 
 # Page configurations
 st.set_page_config(page_title="CiteShield AI Pro", page_icon="🛡️", layout="wide")
@@ -31,7 +32,6 @@ def extract_text_and_paragraphs(file):
         for p in doc.paragraphs:
             text = p.text.strip()
             if text:
-                # SANITIZATION: Clean AI line markers, source tags, and page annotations
                 text = re.sub(r"^\\s*", "", text, flags=re.IGNORECASE)
                 text = re.sub(r"^---\s*PAGE\s*\d+\s*---", "", text, flags=re.IGNORECASE)
                 if text.strip():
@@ -46,7 +46,6 @@ def extract_text_and_paragraphs(file):
                 lines = [line.strip() for line in text.split('\n') if line.strip()]
                 clean_lines = []
                 for line in lines:
-                    # SANITIZATION: Clean AI line markers, source tags, and page annotations
                     line = re.sub(r"^\\s*", "", line, flags=re.IGNORECASE)
                     line = re.sub(r"^---\s*PAGE\s*\d+\s*---", "", line, flags=re.IGNORECASE)
                     if line.strip():
@@ -80,7 +79,6 @@ def parse_bibliography(full_text):
 
     lines = [line.strip() for line in bib_text.split('\n') if line.strip()]
     
-    # Pre-scan layout type
     numbered_line_count = 0
     total_lines_checked = 0
     for line in lines[:40]:
@@ -99,7 +97,6 @@ def parse_bibliography(full_text):
     doi_regex = r"(10\.\d{4,9}/[-._;()/:A-Z0-9]+)"
     
     for line in lines:
-        # Filter layout/journal noise tracking signatures
         if line.lower() in ['references', 'bibliography', 'literature cited', 'reference list']:
             continue
         if "plos one" in line.lower() or "doi.org/10.1371" in line.lower():
@@ -110,8 +107,6 @@ def parse_bibliography(full_text):
         if is_numbered_system:
             if num_match:
                 potential_id = int(num_match.group(1))
-                
-                # STRICT SEQUENCE TRACKING: Must follow the established chronological flow
                 if potential_id == next_expected_id or (potential_id == next_expected_id + 1 and next_expected_id > 1):
                     current_id = potential_id
                     next_expected_id = current_id + 1
@@ -122,7 +117,6 @@ def parse_bibliography(full_text):
                         "marker": str(current_id)
                     }
                 else:
-                    # Out of sequence numbers (years/volumes) are merged back to the active tracking parent
                     if current_id in bib_mapping:
                         bib_mapping[current_id]["raw_lines"].append(line)
                         bib_mapping[current_id]["clean_query"] += " " + line
@@ -135,7 +129,6 @@ def parse_bibliography(full_text):
                     bib_mapping[current_id] = {"raw_lines": [line], "clean_query": line, "marker": str(current_id)}
                     generated_id += 1
         else:
-            # Author-Date/Alphabetical system rules
             is_new_author_block = re.match(r"^[A-Z][A-Za-z\-]+,?\s[A-Z]", line) or re.match(r"^[A-Z][a-z]+", line)
             if not bib_mapping or is_new_author_block:
                 current_id = generated_id
@@ -169,7 +162,8 @@ def parse_bibliography(full_text):
         
     return body_text, final_mapping
 
-# ─── REGISTRY RESOLUTION ENGINE ───
+# ─── REGISTRY RESOLUTION ENGINE (SPEED OPTIMIZED VIA CACHING) ───
+@st.cache_data(show_spinner=False)
 def resolve_and_verify_citation(bib_info):
     """Resolves citation strings against official Crossref metadata indices."""
     headers = {"User-Agent": "CiteShieldPro/2.0 (mailto:analytics@citeshield.pro)"}
@@ -256,6 +250,7 @@ def fetch_abstract_via_semantic_scholar(doi):
         pass
     return ""
 
+# ─── HIGH-SPEED CONTEXT CHECK ENGINE (STREAMLINED 3-POINT MODEL + CACHE) ───
 @st.cache_data(show_spinner=False)
 def get_contextual_fit_analysis(context_paragraph, reference_content):
     """
@@ -281,7 +276,9 @@ def get_contextual_fit_analysis(context_paragraph, reference_content):
     }}
     """
     
-    # Generate content using the low-latency Gemini Flash model
+    if not genai.get_default_model():
+         genai.configure(api_key=st.session_state.get("api_key_active", ""))
+         
     model = genai.GenerativeModel('gemini-1.5-flash')
     
     try:
@@ -294,17 +291,68 @@ def get_contextual_fit_analysis(context_paragraph, reference_content):
             "discrepancies": data.get("Discrepancies", []),
             "reasoning": data.get("Reasoning", "No explanation provided.")
         }
-    except Exception as e:
+    except Exception:
         return {
             "status": "MISMATCH",
             "discrepancies": ["Audit parsing error"],
             "reasoning": "Could not parse high-speed audit output."
         }
 
+# ─── MULTITHREADED WORKER SEGMENT FOR PARALLEL PIPELINING ───
+def audit_single_citation(serial_num, info, gemini_api_key, paragraphs):
+    """Isolated processing worker deployed inside parallel thread slots."""
+    verification = resolve_and_verify_citation(info)
+    
+    v_status = verification.get("status", "Unverified")
+    v_doi = verification.get("doi", "N/A")
+    v_title = verification.get("title", "N/A")
+    v_journal = verification.get("journal", "N/A")
+    v_author = verification.get("main_author", "N/A")
+    
+    marker = info["marker"]
+    context_paragraphs = [p for p in paragraphs if marker in p]
+    combined_context = " | ".join(context_paragraphs) if context_paragraphs else "Not explicitly mapped inside body text layout."
+    
+    abstract_text = ""
+    if "Valid" in v_status:
+        abstract_text = fetch_abstract_via_semantic_scholar(v_doi)
+        
+    record = {
+        "Serial No": serial_num,
+        "DOI": v_doi,
+        "Title": v_title,
+        "Journal": v_journal,
+        "Main Author": v_author,
+        "Status": v_status,
+        "Context Fit": "Not Verified",
+        "Context Paragraph": combined_context
+    }
+    
+    if "Valid" in v_status and gemini_api_key and abstract_text:
+        result = get_contextual_fit_analysis(combined_context, abstract_text)
+        if result["status"] == "MISMATCH":
+            record["Status"] = "Contextual Mismatch"
+            record["Context Fit"] = f"🚨 Misalignment: {result['reasoning']}"
+        else:
+            record["Status"] = "Valid (Context Aligned)"
+            record["Context Fit"] = "✅ Aligned"
+    elif "Valid" in v_status and not gemini_api_key:
+        record["Context Fit"] = "Provide Gemini Key to Verify"
+    elif "Hallucinated" in v_status:
+        record["Context Fit"] = "Skipped (Fake Reference)"
+        
+    return record
+
+
 # ─── USER INTERFACE RUNTIME ───
 uploaded_file = st.file_uploader("Upload Manuscript File", type=["docx", "pdf"])
 
 if uploaded_file:
+    # Save the key into session state variables for access during async functions
+    if gemini_api_key:
+        st.session_state["api_key_active"] = gemini_api_key
+        genai.configure(api_key=gemini_api_key)
+
     with st.spinner("Decoding document structural layout matrices..."):
         full_text, paragraphs = extract_text_and_paragraphs(uploaded_file)
         body_text, bib_mapping = parse_bibliography(full_text)
@@ -317,54 +365,23 @@ if uploaded_file:
         audit_records = []
         progress_bar = st.progress(0)
         
-        for idx, (serial_num, info) in enumerate(bib_mapping.items()):
-            verification = resolve_and_verify_citation(info)
-            
-            v_status = verification.get("status", "Unverified")
-            v_doi = verification.get("doi", "N/A")
-            v_title = verification.get("title", "N/A")
-            v_journal = verification.get("journal", "N/A")
-            v_author = verification.get("main_author", "N/A")
-            
-            marker = info["marker"]
-            context_paragraphs = [p for p in paragraphs if marker in p]
-            combined_context = " | ".join(context_paragraphs) if context_paragraphs else "Not explicitly mapped inside body text layout."
-            
-            abstract_text = ""
-            if "Valid" in v_status:
-                abstract_text = fetch_abstract_via_semantic_scholar(v_doi)
-                record = {
-                "Serial No": serial_num,
-                "DOI": v_doi,
-                "Title": v_title,
-                "Journal": v_journal,
-                "Main Author": v_author,
-                "Status": v_status,
-                "Context Fit": "Not Verified",
-                "Context Paragraph": combined_context
+        # ASYNC BLOCK: Spawns references concurrently over background processes
+        with concurrent.futures.ThreadPoolExecutor(max_workers=5) as executor:
+            futures = {
+                executor.submit(audit_single_citation, serial_num, info, gemini_api_key, paragraphs): serial_num
+                for serial_num, info in bib_mapping.items()
             }
-
-            # 1. Logic check for Context Fit
-            if "Valid" in v_status and gemini_api_key and abstract_text:
-                result = get_contextual_fit_analysis(combined_context, abstract_text)
-                
-                if result["status"] == "MISMATCH":
-                    record["Status"] = "Contextual Mismatch"
-                    record["Context Fit"] = f"🚨 Misalignment: {result['reasoning']}"
-                else:
-                    record["Status"] = "Valid (Context Aligned)"
-                    record["Context Fit"] = "✅ Aligned"
-
-            # 2. These elifs MUST be at the same indentation level as the 'if' above
-            elif "Valid" in v_status and not gemini_api_key:
-                record["Context Fit"] = "Provide Gemini Key to Verify"
-            elif "Hallucinated" in v_status:
-                record["Context Fit"] = "Skipped (Fake Reference)"
-
-            # 3. These remain inside the 'for' loop
-            audit_records.append(record)
-            progress_bar.progress((idx + 1) / len(bib_mapping))
             
+            for idx, future in enumerate(concurrent.futures.as_completed(futures)):
+                try:
+                    record = future.result()
+                    audit_records.append(record)
+                except Exception as e:
+                    st.error(f"Thread processing anomaly found on Reference Node: {e}")
+                progress_bar.progress((idx + 1) / len(bib_mapping))
+                
+        # Re-sort records to guarantee chronological presentation order
+        audit_records.sort(key=lambda x: x["Serial No"])
         df_audit = pd.DataFrame(audit_records)
         
         # ─── SUMMARY TABLE ───
@@ -375,7 +392,7 @@ if uploaded_file:
             st.warning(f"Attention Required: {len(flagged_df)} anomalies found.")
             st.dataframe(
                 flagged_df[["Serial No", "DOI", "Status", "Main Author", "Journal", "Context Fit"]], 
-                width='stretch',  # <--- CORRECTED VALUE
+                width=None,
                 hide_index=True
             )
         else:
