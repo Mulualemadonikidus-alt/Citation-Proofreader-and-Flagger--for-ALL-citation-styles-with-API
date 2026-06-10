@@ -357,19 +357,20 @@ if uploaded_file:
             }
             
           if "Valid" in v_status and gemini_api_key and abstract_text:
-    # This now pulls from cache first, then calls API if needed
-    result = get_contextual_fit_analysis(combined_context, abstract_text)
-    
-    if result["status"] == "MISMATCH":
-        record["Status"] = "Contextual Mismatch"
-        record["Context Fit"] = f"🚨 Misalignment: {result['reasoning']}"
-    else:
-        record["Status"] = "Valid (Context Aligned)"
-        record["Context Fit"] = "✅ Aligned"
-            elif "Valid" in v_status and not gemini_api_key:
-                record["Context Fit"] = "Provide Gemini Key to Verify"
-            elif "Hallucinated" in v_status:
-                record["Context Fit"] = "Skipped (Fake Reference)"
+            result = get_contextual_fit_analysis(combined_context, abstract_text)
+            
+            if result["status"] == "MISMATCH":
+                record["Status"] = "Contextual Mismatch"
+                record["Context Fit"] = f"🚨 Misalignment: {result['reasoning']}"
+            else:
+                record["Status"] = "Valid (Context Aligned)"
+                record["Context Fit"] = "✅ Aligned"
+
+        # These MUST be moved back to align with the 'if' above
+        elif "Valid" in v_status and not gemini_api_key:
+            record["Context Fit"] = "Provide Gemini Key to Verify"
+        elif "Hallucinated" in v_status:
+            record["Context Fit"] = "Skipped (Fake Reference)"
                 
             audit_records.append(record)
             progress_bar.progress((idx + 1) / len(bib_mapping))
