@@ -344,8 +344,7 @@ if uploaded_file:
             abstract_text = ""
             if "Valid" in v_status:
                 abstract_text = fetch_abstract_via_semantic_scholar(v_doi)
-                
-            record = {
+                record = {
                 "Serial No": serial_num,
                 "DOI": v_doi,
                 "Title": v_title,
@@ -355,23 +354,25 @@ if uploaded_file:
                 "Context Fit": "Not Verified",
                 "Context Paragraph": combined_context
             }
-            
+
+            # 1. Logic check for Context Fit
             if "Valid" in v_status and gemini_api_key and abstract_text:
-              result = get_contextual_fit_analysis(combined_context, abstract_text)
-            
-              if result["status"] == "MISMATCH":
-                  record["Status"] = "Contextual Mismatch"
-                  record["Context Fit"] = f"🚨 Misalignment: {result['reasoning']}"
-            else:
-                record["Status"] = "Valid (Context Aligned)"
-                record["Context Fit"] = "✅ Aligned"
-            
-            
+                result = get_contextual_fit_analysis(combined_context, abstract_text)
+                
+                if result["status"] == "MISMATCH":
+                    record["Status"] = "Contextual Mismatch"
+                    record["Context Fit"] = f"🚨 Misalignment: {result['reasoning']}"
+                else:
+                    record["Status"] = "Valid (Context Aligned)"
+                    record["Context Fit"] = "✅ Aligned"
+
+            # 2. These elifs MUST be at the same indentation level as the 'if' above
             elif "Valid" in v_status and not gemini_api_key:
                 record["Context Fit"] = "Provide Gemini Key to Verify"
             elif "Hallucinated" in v_status:
                 record["Context Fit"] = "Skipped (Fake Reference)"
-                
+
+            # 3. These remain inside the 'for' loop
             audit_records.append(record)
             progress_bar.progress((idx + 1) / len(bib_mapping))
             
