@@ -251,32 +251,34 @@ def fetch_abstract_via_semantic_scholar(doi):
     return ""
 
 # ─── HIGH-SPEED CONTEXT CHECK ENGINE (STREAMLINED 3-POINT MODEL + CACHE) ───
-@st.cache_data(show_spinner=False)
 def get_contextual_fit_analysis(context_paragraph, reference_content):
     """
-    Performs a high-speed forensic audit of the citation context 
-    using a streamlined 3-point verification schema.
+    Performs a forensic audit of the citation context using a 6-point 
+    verification schema to ensure factual alignment.
     """
     prompt = f"""
-    You are an academic forensic auditor. Compare the provided Body Text excerpt and the cited Reference abstract for factual consistency.
+    You are an academic forensic auditor. Compare the provided Body Text excerpt and the cited Reference for factual consistency.
 
     1. Body Text: "{context_paragraph}"
     2. Reference: "{reference_content}"
 
-    Audit the following 3 core criteria for validation:
-    1. Core Claim Alignment: Does the body text accurately represent the main findings or objectives of the reference?
-    2. Methodological Consistency: Is there any fundamental contradiction in the study design or approach described?
-    3. Abstract Support: Does the reference abstract broadly support or justify the context in which it was cited?
+    Audit the following 6 core data points:
+    1. Study Sites: Do the hospitals match?
+    2. Methodology: Does the study design/type match?
+    3. Sample Size: Does the 'n' match?
+    4. Study Year: Do the timeframes match?
+    5. Objectives: Do the study goals align?
+    6. Abstract Context: Does the reference abstract support the body text's claim?
 
     Output the result in the following JSON format:
     {{
         "Status": "ALIGNED" or "MISMATCH",
-        "Discrepancies": ["list any explicit contradictions here, or leave empty if none"],
-        "Reasoning": "One concise sentence explaining the decision."
+        "Discrepancies": ["list any specific failures here or 'None'"],
+        "Reasoning": "One sentence explanation."
     }}
     """
     
-    # Configuration is already handled globally in the main thread; instantiate directly
+    # Generate content using the Gemini model
     model = genai.GenerativeModel('gemini-1.5-flash')
     
     try:
@@ -289,15 +291,15 @@ def get_contextual_fit_analysis(context_paragraph, reference_content):
             "discrepancies": data.get("Discrepancies", []),
             "reasoning": data.get("Reasoning", "No explanation provided.")
         }
-    except Exception:
+    except Exception as e:
         return {
             "status": "MISMATCH",
             "discrepancies": ["Audit parsing error"],
-            "reasoning": "Could not parse high-speed audit output."
-        }}
+            "reasoning": "Could not parse audit output."
+        }
     """
     
-    if not genai.get_default_model():
+ 
          genai.configure(api_key=st.session_state.get("api_key_active", ""))
          
     model = genai.GenerativeModel('gemini-1.5-flash')
