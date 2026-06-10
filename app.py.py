@@ -276,6 +276,27 @@ def get_contextual_fit_analysis(context_paragraph, reference_content):
     }}
     """
     
+    # Configuration is already handled globally in the main thread; instantiate directly
+    model = genai.GenerativeModel('gemini-1.5-flash')
+    
+    try:
+        response = model.generate_content(prompt)
+        json_text = response.text.replace("```json", "").replace("```", "").strip()
+        data = json.loads(json_text)
+        
+        return {
+            "status": data.get("Status", "MISMATCH"),
+            "discrepancies": data.get("Discrepancies", []),
+            "reasoning": data.get("Reasoning", "No explanation provided.")
+        }
+    except Exception:
+        return {
+            "status": "MISMATCH",
+            "discrepancies": ["Audit parsing error"],
+            "reasoning": "Could not parse high-speed audit output."
+        }}
+    """
+    
     if not genai.get_default_model():
          genai.configure(api_key=st.session_state.get("api_key_active", ""))
          
