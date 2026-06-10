@@ -264,29 +264,32 @@ def get_contextual_fit_analysis(context_paragraph, reference_content):
     """
     model = genai.GenerativeModel('gemini-1.5-flash')
     
+    # Ensure the prompt starts with opening triple quotes
     prompt = f"""
     You are an academic forensic auditor. Compare the provided Body Text excerpt and the cited Reference for factual consistency.
+
     1. Body Text: "{context_paragraph}"
     2. Reference: "{reference_content}"
-    Audit the following 6 core data points: Sites, Methodology, Sample Size, Year, Objectives, Abstract Context.
+
+    Audit the following 6 core data points:
+    1. Study Sites: Do the hospitals match?
+    2. Methodology: Does the study design/type match?
+    3. Sample Size: Does the 'n' match?
+    4. Study Year: Do the timeframes match?
+    5. Objectives: Do the study goals align?
+    6. Abstract Context: Does the reference abstract support the body text's claim?
+
     Output the result in the following JSON format:
     {{
         "Status": "ALIGNED" or "MISMATCH",
+        "Discrepancies": ["list any specific failures here or 'None'"],
         "Reasoning": "One sentence explanation."
     }}
-    """
-    
-    try:
-        response = model.generate_content(prompt)
-        json_text = response.text.replace("```json", "").replace("```", "").strip()
-        data = json.loads(json_text)
-        return {
-            "status": data.get("Status", "MISMATCH"),
-            "reasoning": data.get("Reasoning", "No explanation provided.")
-        }
-    except Exception:
-        return {"status": "MISMATCH", "reasoning": "Audit parsing error."}
-    """
+    """  # <--- THE CLOSING MARK GOES HERE, IMMEDIATELY AFTER THE PROMPT
+
+    # NOW, your executable code starts here on a fresh line:
+    model = genai.GenerativeModel('gemini-1.5-flash')
+    response = model.generate_content(prompt)
     
     # Generate content using the Gemini model
     model = genai.GenerativeModel('gemini-1.5-flash')
