@@ -256,31 +256,36 @@ def fetch_abstract_via_semantic_scholar(doi):
         pass
     return ""
 
+@st.cache_data(show_spinner=False)
 def get_contextual_fit_analysis(context_paragraph, reference_content):
     """
-    Performs a forensic audit of the citation context using a 6-point 
-    verification schema to ensure factual alignment.
+    Forensic audit using 6-point verification schema.
+    Optimized: Uses 'gemini-1.5-flash' for high-speed performance.
     """
+    model = genai.GenerativeModel('gemini-1.5-flash')
+    
     prompt = f"""
     You are an academic forensic auditor. Compare the provided Body Text excerpt and the cited Reference for factual consistency.
-
     1. Body Text: "{context_paragraph}"
     2. Reference: "{reference_content}"
-
-    Audit the following 6 core data points:
-    1. Study Sites: Do the hospitals match?
-    2. Methodology: Does the study design/type match?
-    3. Sample Size: Does the 'n' match?
-    4. Study Year: Do the timeframes match?
-    5. Objectives: Do the study goals align?
-    6. Abstract Context: Does the reference abstract support the body text's claim?
-
+    Audit the following 6 core data points: Sites, Methodology, Sample Size, Year, Objectives, Abstract Context.
     Output the result in the following JSON format:
     {{
         "Status": "ALIGNED" or "MISMATCH",
-        "Discrepancies": ["list any specific failures here or 'None'"],
         "Reasoning": "One sentence explanation."
     }}
+    """
+    
+    try:
+        response = model.generate_content(prompt)
+        json_text = response.text.replace("```json", "").replace("```", "").strip()
+        data = json.loads(json_text)
+        return {
+            "status": data.get("Status", "MISMATCH"),
+            "reasoning": data.get("Reasoning", "No explanation provided.")
+        }
+    except Exception:
+        return {"status": "MISMATCH", "reasoning": "Audit parsing error."}
     """
     
     # Generate content using the Gemini model
@@ -348,15 +353,16 @@ if uploaded_file:
                 "Context Paragraph": combined_context
             }
             
-            if "Valid" in v_status and gemini_api_key and abstract_text:
-                result = get_contextual_fit_analysis(combined_context, abstract_text)
-                fit = (result["status"] == "ALIGNED")
-                reason = result["reasoning"]
-                if not fit:
-                    record["Status"] = "Contextual Mismatch"
-                    record["Context Fit"] = f"🚨 Misalignment: {reason}"
-                else:
-                    record["Context Fit"] = "✅ Aligned"
+          if "Valid" in v_status and gemini_api_key and abstract_text:
+    # This now pulls from cache first, then calls API if needed
+    result = get_contextual_fit_analysis(combined_context, abstract_text)
+    
+    if result["status"] == "MISMATCH":
+        record["Status"] = "Contextual Mismatch"
+        record["Context Fit"] = f"🚨 Misalignment: {result['reasoning']}"
+    else:
+        record["Status"] = "Valid (Context Aligned)"
+        record["Context Fit"] = "✅ Aligned"
             elif "Valid" in v_status and not gemini_api_key:
                 record["Context Fit"] = "Provide Gemini Key to Verify"
             elif "Hallucinated" in v_status:
